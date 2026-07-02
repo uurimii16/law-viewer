@@ -34,6 +34,19 @@ def mother_of(name):
         if E.norm(gname) == E.norm(name): return mo, kind
     return name, "law"
 
+@st.cache_data(show_spinner=False)
+def _secs(names, inc):
+    out = []
+    for nm in names:
+        mo, kd = mother_of(nm)
+        out.append(E.doc_sections(nm, kd, (mo if mo != nm else nm), inc))
+    return out
+
+@st.cache_data(show_spinner=False)
+def _html_bytes(names, inc, color, layout):
+    return X.build_html(_secs(names, inc),
+                        {"include_cites": inc, "color": color, "layout": layout}).encode("utf-8")
+
 # ── 세션 상태 ────────────────────────────────────────────────────────────────
 if "picked" not in st.session_state:
     st.session_state.picked = list(E.CORE_LAWS[:1])
@@ -149,50 +162,52 @@ else:                                            # 탭 뷰
             else:
                 render_lines(E.split_guide(doc["body"]), mother)
 
-# ── 내보내기 ─────────────────────────────────────────────────────────────────
-st.divider()
-st.subheader("📥 내보내기 (선택한 법령 전체)")
-if picked:
-    @st.cache_data(show_spinner=False)
-    def _sections(names, inc):
-        out = []
-        for nm in names:
-            mo, kd = mother_of(nm)
-            out.append(E.doc_sections(nm, kd, (mo if mo != nm else nm), inc))
-        return out
-    with st.spinner("문서 구성 중…"):
-        secs = _sections(tuple(picked), show_cites)
+# ── 사이드바: 내보내기 / 노션 (항상 보이게) ──────────────────────────────────
+st.sidebar.divider()
+st.sidebar.subheader("📥 내보내기 · 노션 푸시")
+if not picked:
+    st.sidebar.caption("먼저 볼 법을 선택하세요.")
+else:
     fname = "법령조합_" + "_".join(E.norm(p)[:8] for p in picked)
-    cc1, cc2 = st.columns(2)
-    with cc1:
-        st.download_button("📄 HTML 내려받기", data=X.build_html(secs, options).encode("utf-8"),
-                           file_name=fname + ".html", mime="text/html", use_container_width=True)
-        st.caption("브라우저에서 열어 '인쇄 → PDF로 저장'도 가능")
-    with cc2:
-        try:
-            st.download_button("📕 PDF 내려받기", data=X.build_pdf(secs, options),
-                               file_name=fname + ".pdf", mime="application/pdf", use_container_width=True)
-        except Exception as e:
-            st.error(f"PDF 생성 실패: {e}")
+    st.sidebar.download_button(
+        "📄 HTML 내려받기",
+        data=_html_bytes(tuple(picked), show_cites, color, layout),
+        file_name=fname + ".html", mime="text/html", use_container_width=True)
+    st.sidebar.caption("HTML은 한글(HWP)·Word로도 열려요. 브라우저 '인쇄 → PDF 저장'도 가능.")
 
-# ── 노션 푸시 (이용자별) ─────────────────────────────────────────────────────
-with st.expander("📤 선택한 법령을 '내 노션'으로 푸시하기"):
-    st.markdown(
-        "1. 노션 [Integration](https://www.notion.so/my-integrations) 만들고 토큰(`ntn_...`) 발급\n"
-        "2. 푸시할 **부모 페이지** → `...` → **연결 추가**로 그 Integration 연결\n"
-        "3. 아래에 토큰과 그 페이지 주소 붙여넣기")
-    tok = st.text_input("노션 토큰", type="password", placeholder="ntn_...")
-    parent = st.text_input("부모 페이지 URL 또는 ID", placeholder="https://www.notion.so/....")
-    st.caption("⚠️ 토큰은 서버에 저장하지 않습니다(이 요청에만 사용). 각자 자기 노션에만 씁니다.")
-    if st.button("이 목록을 내 노션으로 푸시", type="primary", disabled=not (tok and parent and picked)):
-        logbox = st.empty(); logs = []
-        def log(m): logs.append(m); logbox.code("\n".join(logs))
-        ok = 0
-        for name in picked:
-            mo, kd = mother_of(name)
-            try:
-                if N.push_one(tok, name, kd, parent, (mo if mo != name else name), log=log):
-                    ok += 1
-            except Exception as e:
-                log(f"  !! 실패({name}): {e}")
-        (st.success if ok else st.error)(f"완료: {ok}/{len(picked)}건 푸시")
+    if st.sidebar.button("📕 PDF 만들기", use_container_width=True):
+        try:
+            with st.spinner("PDF 생성 중… (양이 많으면 조금 걸려요)"):
+                st.session_state._pdf = X.build_pdf(
+                    _secs(tuple(picked), show_cites),
+                    {"include_cites": show_cites, "color": color, "layout": layout})
+                st.session_state._pdfname = fname + ".pdf"
+        except Exception as e:
+            st.session_state._pdf = None
+            st.sidebar.error(f"PDF 생성 실패: {e}")
+    if st.session_state.get("_pdf"):
+        st.sidebar.download_button(
+            "⬇️ PDF 저장", data=st.session_state._pdf,
+            file_name=st.session_state.get("_pdfname", "법령.pdf"),
+            mime="application/pdf", use_container_width=True)
+
+    with st.sidebar.expander("📤 내 노션으로 푸시"):
+        st.markdown(
+            "1. 노션 [Integration](https://www.notion.so/my-integrations) 만들고 토큰(`ntn_...`) 발급\n"
+            "2. 푸시할 **부모 페이지** → `...` → **연결 추가**로 그 Integration 연결\n"
+            "3. 아래에 토큰·페이지 주소 붙여넣기")
+        tok = st.text_input("노션 토큰", type="password", placeholder="ntn_...")
+        parent = st.text_input("부모 페이지 URL 또는 ID", placeholder="https://www.notion.so/....")
+        st.caption("⚠️ 토큰은 저장 안 함(이 요청에만). 각자 자기 노션에만 씁니다.")
+        if st.button("내 노션으로 푸시", type="primary", disabled=not (tok and parent)):
+            logbox = st.empty(); logs = []
+            def log(m): logs.append(m); logbox.code("\n".join(logs))
+            ok = 0
+            for name in picked:
+                mo, kd = mother_of(name)
+                try:
+                    if N.push_one(tok, name, kd, parent, (mo if mo != name else name), log=log):
+                        ok += 1
+                except Exception as e:
+                    log(f"  !! 실패({name}): {e}")
+            (st.success if ok else st.error)(f"완료: {ok}/{len(picked)}건 푸시")
