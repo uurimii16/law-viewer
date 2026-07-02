@@ -1,0 +1,22 @@
+name: Keep Streamlit App Awake
+on:
+  schedule:
+    - cron: "0 */6 * * *"   # 6시간마다 (UTC 기준)
+  workflow_dispatch:         # 수동 실행 버튼
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install playwright
+      - run: python -m playwright install --with-deps chromium
+      - name: Visit Streamlit app
+        env:
+          # 배포 후 repo Settings > Secrets and variables > Actions > Variables 에
+          # STREAMLIT_URL(예: https://law-viewer-xxxx.streamlit.app/) 을 추가하면 그 값을 쓴다.
+          # 없으면 keep_awake.py가 조용히 건너뛴다(실패하지 않음).
+          STREAMLIT_URL: ${{ vars.STREAMLIT_URL }}
+        run: python .github/keep_awake.py
