@@ -7,6 +7,7 @@
 - 인용 표기/색상/배치 옵션을 골라 PDF·HTML로 추출하거나, 각자 자기 노션으로 푸시.
 - ⚠️ 이 앱은 AI를 안 씀 → AI 토큰 소모 0. 노션 토큰은 이용자 각자의 것.
 """
+import re
 import streamlit as st
 import law_engine as E
 import notion_sink as N
@@ -26,6 +27,10 @@ def c_search(q):      return E.search_law(q)
 def c_index(mother):  return E.get_index(mother)
 @st.cache_data(show_spinner=False, ttl=6 * 3600)
 def c_3dan(name):     return E.three_column(name)
+@st.cache_data(show_spinner=False, ttl=6 * 3600)
+def c_deleg(mother):  return E.build_delegation(mother)
+@st.cache_data(show_spinner=False, ttl=6 * 3600)
+def c_ext(lawname, body):  return E.resolve_external(lawname, body)
 @st.cache_data(show_spinner=False, ttl=6 * 3600)
 def c_sections(name, kind, mother, inc):  return E.doc_sections(name, kind, mother, inc)
 
@@ -86,16 +91,22 @@ if st.sidebar.button("🔄 최신으로 새로고침"):
 
 picked = st.session_state.picked
 
-# ── 표시 옵션 ────────────────────────────────────────────────────────────────
+# ── 보기 방식 / 표시 옵션 ────────────────────────────────────────────────────
 st.sidebar.divider()
+st.sidebar.subheader("🖥️ 보기 방식")
+MODES = ["탭 보기 (여러 법)", "3단 비교 (조번호 기준)",
+         "위임 3단 (법↔시행령·규칙)", "호 단위 관련조문"]
+mode = st.sidebar.radio("모드", MODES, index=0,
+                        help="아래 3개는 법을 1개만 선택했을 때 동작합니다(그 법의 법·시행령·시행규칙 세트).")
+
 st.sidebar.subheader("⚙️ 표시·추출 옵션")
-show_cites = st.sidebar.checkbox("타법·인용 조문 표기(📎)", value=True)
+show_cites = st.sidebar.checkbox("자기 법령 인용 펼침(📎)", value=True,
+                                 help="본문 속 '법/영/규칙 제N조'를 그 자리에서 펼쳐 봅니다.")
+show_ext = st.sidebar.checkbox("타법 인용 펼침(📖·느림)", value=False,
+                               help="「산지관리법」 제6조… 처럼 다른 법 인용을 법제처에서 가져와 아래에 붙입니다.")
 COLORS = {"파랑": "#2E5AAC", "먹색": "#222222", "진회색": "#444B54", "고동": "#7A3B2E", "숲색": "#2F6B4F"}
 color = COLORS[st.sidebar.selectbox("제목 색상", list(COLORS), index=0)]
 layout = st.sidebar.radio("배치", ["기본", "조밀"], horizontal=True)
-show_3dan = False
-if len(picked) == 1:
-    show_3dan = st.sidebar.checkbox("3단(법·시행령·시행규칙) 비교로 보기")
 
 kw = st.text_input("본문 검색(키워드)", placeholder="조문 안 단어로 필터 · 비우면 전체")
 options = {"include_cites": show_cites, "color": color, "layout": layout}
@@ -108,40 +119,35 @@ def render_lines(lines, mother):
         if not ln.strip(): continue
         if kw and kw not in ln: continue
         st.markdown(f"<div style='margin:.1em 0'>{ln.replace('<','&lt;')}</div>", unsafe_allow_html=True)
-        for label, body in E.line_cites(ln, idx, cite):
-            with st.expander("📎 " + label):
-                for x in body: st.write(x)
+        if show_cites:
+            for label, body in E.line_cites(ln, idx, cite):
+                with st.expander("📎 " + label):
+                    for x in body: st.write(x)
+        if show_ext:
+            for lname, body in E.external_cites_in_line(ln):
+                try:
+                    for label, blines in c_ext(lname, body):
+                        with st.expander("📖 " + label):
+                            for x in blines: st.write(x)
+                except Exception:
+                    pass
 
-def render_col(cell, mother):
+def render_related(cell):
+    """위임/호 단위에서 붙는 시행령·규칙 조문을 접이식으로."""
     if not cell:
-        st.caption("—"); return
-    header, lines = cell
-    st.markdown(f"**{header}**")
-    render_lines(lines, mother)
+        st.caption("— (관련 시행령·규칙 없음)"); return
+    for role, mark in (("영", "📗 시행령"), ("규칙", "📙 시행규칙")):
+        for header, lines in cell.get(role, []):
+            with st.expander(f"{mark} · {header}", expanded=False):
+                for ln in lines:
+                    if ln.strip():
+                        st.markdown(ln.replace("<", "&lt;"))
 
 # ── 메인 ─────────────────────────────────────────────────────────────────────
 st.markdown(f"### 선택한 법령 ({len(picked)}/{MAX_PICK})")
-if not picked:
-    st.info("왼쪽에서 볼 법령을 선택하세요 (최대 3개).")
-elif show_3dan:                                  # 3단 비교 (한 법 선택 시)
-    name = picked[0]
-    mother, _ = mother_of(name)
-    with st.spinner(f"{name} 3단 구성 중…"):
-        t = c_3dan(name)
-    st.subheader(f"{t['name']} — 3단 비교")
-    st.caption("법 · 시행령 · 시행규칙을 조번호 기준으로 나란히(대응은 참고용). 없는 단은 '—'.")
-    c1, c2, c3 = st.columns(3)
-    for c, role in ((c1, "법"), (c2, "영"), (c3, "규칙")):
-        c.markdown({"법": "**📘 법률**", "영": "**📗 시행령**", "규칙": "**📙 시행규칙**"}[role])
-    for row in t["rows"]:
-        if kw and not any(kw in (E._s(c[1]) if (c := row[r]) else "") for r in ("법", "영", "규칙")):
-            continue
-        c1, c2, c3 = st.columns(3)
-        with c1: render_col(row["법"], mother)
-        with c2: render_col(row["영"], mother)
-        with c3: render_col(row["규칙"], mother)
-        st.divider()
-else:                                            # 탭 뷰
+single = (len(picked) == 1)
+
+def view_tabs():
     tabs = st.tabs(picked)
     for tab, name in zip(tabs, picked):
         with tab:
@@ -161,6 +167,91 @@ else:                                            # 탭 뷰
                     render_lines(lines, mother)
             else:
                 render_lines(E.split_guide(doc["body"]), mother)
+
+def view_3dan_jono(name):
+    mother, _ = mother_of(name)
+    with st.spinner(f"{name} 3단 구성 중…"):
+        t = c_3dan(name)
+    st.subheader(f"{t['name']} — 3단 비교 (조번호 기준)")
+    st.caption("법·시행령·시행규칙을 조번호로 나란히(대응은 참고용). 없는 단은 '—'.")
+    c1, c2, c3 = st.columns(3)
+    for c, m in ((c1, "**📘 법률**"), (c2, "**📗 시행령**"), (c3, "**📙 시행규칙**")): c.markdown(m)
+    for row in t["rows"]:
+        if kw and not any(kw in (E._s(c[1]) if (c := row[r]) else "") for r in ("법", "영", "규칙")):
+            continue
+        cols = st.columns(3)
+        for col, r in zip(cols, ("법", "영", "규칙")):
+            with col:
+                cell = row[r]
+                if cell:
+                    st.markdown(f"**{cell[0]}**"); render_lines(cell[1], mother)
+                else:
+                    st.caption("—")
+        st.divider()
+
+def view_delegation(name):
+    mother, _ = mother_of(name)
+    with st.spinner(f"{name} 위임관계 분석 중…"):
+        d = c_deleg(mother)
+    st.subheader(f"{d['law']['name']} — 위임 3단")
+    st.caption("각 법 조문 옆에, 그 조를 '법 제N조…에 따라' 위임받은 시행령·시행규칙을 붙였습니다.")
+    for header, lines in E.render_units(d["law"]["units"]):
+        if header.startswith("§ "):
+            st.markdown(f"### {header[2:]}"); continue
+        mm = re.match(r"제(\d+)조(?:의(\d+))?", header)
+        key = (int(mm.group(1)), int(mm.group(2) or 0)) if mm else None
+        if kw and kw not in header and not any(kw in x for x in lines):
+            cell0 = d["by_jo"].get(key, {})
+            if not any(kw in h for role in ("영", "규칙") for h, _ in cell0.get(role, [])):
+                continue
+        cL, cR = st.columns([3, 2])
+        with cL:
+            st.markdown(f"**{header}**"); render_lines(lines, mother)
+        with cR:
+            render_related(d["by_jo"].get(key, {}))
+        st.divider()
+
+def view_ho(name):
+    mother, _ = mother_of(name)
+    with st.spinner(f"{name} 호 단위 분석 중…"):
+        d = c_deleg(mother)
+    st.subheader(f"{d['law']['name']} — 호 단위 관련조문")
+    st.caption("각 호(예: 13. 공공시설) 아래에 그 호를 구체화한 시행령·규칙을 붙였습니다.")
+    struct = E.law_units_structured(d["law"]["units"])
+    for s in struct:
+        if kw and kw not in s["header"] and kw not in s["head"] \
+           and not any(kw in ho["text"] for h in s["항"] for ho in h["호"]) \
+           and not any(kw in ho["text"] for ho in s["호"]):
+            continue
+        esc = lambda t: (t or "").replace("<", "&lt;")
+        st.markdown(f"**{s['header']}**")
+        if s["head"]: st.markdown(esc(s["head"]))
+        def show_ho(hang_M, ho):
+            if not ho.get("K"): return
+            st.markdown(f"&nbsp;&nbsp;**{ho['K']}.** {esc(ho['text'])}", unsafe_allow_html=True)
+            cell = d["by_ho"].get((s["jo"], s["gaji"], hang_M, ho["K"])) \
+                or d["by_ho"].get((s["jo"], s["gaji"], None, ho["K"]))
+            if cell: render_related(cell)
+        for hang in s["항"]:
+            if hang["text"]: st.markdown(esc(hang["text"]))
+            for ho in hang["호"]: show_ho(hang["M"], ho)
+        for ho in s["호"]:
+            show_ho(None, ho)
+        st.divider()
+
+if not picked:
+    st.info("왼쪽에서 볼 법령을 선택하세요 (최대 3개).")
+elif mode == MODES[0]:
+    view_tabs()
+elif not single:
+    st.warning("이 보기는 법을 **1개만** 선택했을 때 동작해요. 지금은 '탭 보기'로 보여드릴게요.")
+    view_tabs()
+elif mode == MODES[1]:
+    view_3dan_jono(picked[0])
+elif mode == MODES[2]:
+    view_delegation(picked[0])
+else:
+    view_ho(picked[0])
 
 # ── 사이드바: 내보내기 / 노션 (항상 보이게) ──────────────────────────────────
 st.sidebar.divider()

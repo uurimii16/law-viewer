@@ -404,6 +404,112 @@ def three_column(name):
     return {"name": (law or {}).get("name", name),
             "has": {"법": bool(L), "영": bool(Y), "규칙": bool(R)}, "rows": rows}
 
+# ── 위임 관계(법↔시행령·규칙) 인덱스 ─────────────────────────────────────────
+_HANG_RE = re.compile(r'제\s*(\d+)\s*항')
+_HO_RE   = re.compile(r'제\s*(\d+)\s*호')
+def _tail_hangho(tail):
+    h = _HANG_RE.search(tail or ""); k = _HO_RE.search(tail or "")
+    return (int(h.group(1)) if h else None, int(k.group(1)) if k else None)
+
+def _refs(text, who):
+    """text 안의 '<who> 제N조[제M항][제K호]' 인용 → [(조,가지,항,호)]. who='법' 또는 '영'.
+    '건축법·기본법' 등 꼬리 오탐은 (?<![가-힣]) 가드로 막음."""
+    rx = re.compile(r'(?<![가-힣])' + who +
+                    r'\s*제\s*(\d+)\s*조(?:\s*의\s*(\d+))?((?:\s*제\s*\d+\s*항|\s*제\s*\d+\s*호)*)')
+    out = []
+    for m in rx.finditer(text or ""):
+        hang, ho = _tail_hangho(m.group(3))
+        out.append((int(m.group(1)), int(m.group(2) or 0), hang, ho))
+    return out
+
+def _unit_text(u):
+    return _s(u.get("조문내용")) + " " + " ".join(_s(h.get("항내용")) for h in as_list(u.get("항")))
+def _unit_render(u):
+    arts = render_units([u])
+    return arts[0] if arts else None
+
+def build_delegation(mother):
+    """법↔시행령·시행규칙 위임관계.
+    반환 {law, by_jo:{(조,가지):{영[],규칙[]}}, by_ho:{(조,가지,항,호):{영[],규칙[]}}}.
+    시행령은 '법 제N조'를, 시행규칙은 '법 제N조' 또는 '영 제M조'(→그 영이 위임받은 법조)로 연결."""
+    law   = fetch_law_units(mother)
+    yeong = fetch_law_units(mother + " 시행령")
+    rule  = fetch_law_units(mother + " 시행규칙")
+    by_jo, by_ho, yeong_to_law = {}, {}, {}
+    def add(d, key, role, r):
+        if not r: return
+        d.setdefault(key, {"영": [], "규칙": []})
+        if r not in d[key][role]: d[key][role].append(r)
+    for u in (as_list(yeong["units"]) if yeong else []):
+        jono = _honum(u.get("조문번호"))
+        if not jono: continue
+        r = _unit_render(u)
+        yjkey = (jono, _honum(u.get("조문가지번호")) or 0)
+        for (jo, gaji, hang, ho) in _refs(_unit_text(u), "법"):
+            yeong_to_law[yjkey] = (jo, gaji)
+            add(by_jo, (jo, gaji), "영", r)
+            if ho: add(by_ho, (jo, gaji, hang, ho), "영", r)
+    for u in (as_list(rule["units"]) if rule else []):
+        jono = _honum(u.get("조문번호"))
+        if not jono: continue
+        r = _unit_render(u); txt = _unit_text(u); placed = set()
+        for (jo, gaji, hang, ho) in _refs(txt, "법"):
+            add(by_jo, (jo, gaji), "규칙", r); placed.add((jo, gaji))
+            if ho: add(by_ho, (jo, gaji, hang, ho), "규칙", r)
+        for (yjo, ygaji, _, _) in _refs(txt, "영"):
+            lk = yeong_to_law.get((yjo, ygaji))
+            if lk and lk not in placed:
+                add(by_jo, lk, "규칙", r); placed.add(lk)
+    return {"law": law, "by_jo": by_jo, "by_ho": by_ho}
+
+def law_units_structured(units):
+    """법 units → [{jo,gaji,header, head(조문두문), 항:[{M,text, 호:[{K,text}]}], 호:[{K,text}]}].
+    호 단위 관련조문 표시를 위해 항/호 번호를 유지한다."""
+    out = []
+    for u in as_list(units):
+        jo = _honum(u.get("조문번호"))
+        if not jo: continue
+        gaji = _honum(u.get("조문가지번호")) or 0
+        title = _s(u.get("조문제목"))
+        header = f"제{jo}조" + (f"의{gaji}" if gaji else "") + (f"({title})" if title else "")
+        head = re.sub(r"^\s*제\s*\d+\s*조(?:의\d+)?\s*(\([^)]*\))?\s*", "", _s(u.get("조문내용")).strip())
+        hangs = []
+        for h in as_list(u.get("항")):
+            M = _circ(h.get("항번호"))   # 항번호 없으면 None(암묵 항) → 그 호는 조 직속 취급
+            hos = [{"K": _honum(ho.get("호번호")), "text": _s(ho.get("호내용")).strip()}
+                   for ho in as_list(h.get("호"))]
+            hangs.append({"M": M, "text": _s(h.get("항내용")).strip(), "호": hos})
+        direct = [{"K": _honum(ho.get("호번호")), "text": _s(ho.get("호내용")).strip()}
+                  for ho in as_list(u.get("호"))]
+        out.append({"jo": jo, "gaji": gaji, "header": header, "head": head,
+                    "항": hangs, "호": direct})
+    return out
+
+# ── 타법(「법령명」) 인용 해석 ────────────────────────────────────────────────
+EXT_RE = re.compile(r'「([^」]+?)」\s*(?P<body>제\s*\d+\s*조(?:\s*의\s*\d+)?(?:' + _SEP + r'?(?:' + _SEG + r'))*)')
+def external_cites_in_line(text):
+    """한 줄 → [(법령명, body)] (「법명」 제N조… 형태)."""
+    return [(m.group(1).strip(), m.group("body")) for m in EXT_RE.finditer(text or "")]
+
+_EXT_IDX = {}
+def _external_index(lawname):
+    if lawname not in _EXT_IDX:
+        try:
+            doc = fetch_law_units(lawname)
+            _EXT_IDX[lawname] = _build_role_index(doc["units"]) if doc else {}
+        except Exception:
+            _EXT_IDX[lawname] = {}
+    return _EXT_IDX[lawname]
+
+def resolve_external(lawname, body):
+    """(법령명, body) → [(label, [본문줄])]. label 예: 「산지관리법」 제6조제3항."""
+    idx = {"법": _external_index(lawname)}
+    out = []
+    for (jo, gaji, hang, ho) in parse_targets(body):
+        label, lines = resolve(idx, "법", jo, gaji, hang, ho)
+        out.append((f"「{lawname}」 " + label.split(" ", 1)[-1], lines))
+    return out
+
 # ── CLI: 인용 해석 오프라인 확인 (--dry) ─────────────────────────────────────
 def _dry(name):
     entry = next((g for g in GUIDES if name in g[0]), None)
