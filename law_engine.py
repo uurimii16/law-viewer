@@ -419,14 +419,18 @@ def _tail_parse(tail):
             int(k.group(2)) if (k and k.group(2)) else 0,
             mk.group(1) if mk else None)
 
+_ADNOM = re.compile(r'\s*에\s*(?:따른|의한)')   # '…에 따른/의한 ○○' = 용어 지칭(위임 아님)
 def _refs(text, who):
     """text 안의 '<who> 제N조[제M항][제K호[의J][가목]]' 인용 → [(조,가지,항,호,호가지,목)].
-    who='법' 또는 '영'. '건축법·기본법' 등 꼬리 오탐은 (?<![가-힣]) 가드로 막음."""
+    who='법' 또는 '영'. '건축법·기본법' 등 꼬리 오탐은 (?<![가-힣]) 가드로 막음.
+    바로 뒤가 '…에 따른/의한 ○○'이면(그 조항이 정의한 것을 이름으로 부르는 지칭) 위임으로 보지 않고 제외."""
     rx = re.compile(r'(?<![가-힣])' + who +
                     r'\s*제\s*(\d+)\s*조(?:\s*의\s*(\d+))?'
                     r'((?:\s*제\s*\d+\s*항|\s*제\s*\d+\s*호(?:\s*의\s*\d+)?(?:\s*[가-힣]\s*목)?)*)')
     out = []
     for m in rx.finditer(text or ""):
+        if _ADNOM.match(text, m.end()):
+            continue
         hang, ho, hoji, mok = _tail_parse(m.group(3))
         out.append((int(m.group(1)), int(m.group(2) or 0), hang, ho, hoji, mok))
     return out
