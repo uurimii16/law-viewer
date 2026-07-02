@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 """streamlit_app.py — 법제처 API 기반 '필요법 조합 뷰어'.
 
-- 최대 3개까지 법 선택(고정 4법+지침4 + 검색으로 아무 법 추가).
-- 한 법만 고르면 '3단(법·시행령·시행규칙) 비교' 보기 가능.
-- 인용 표기/색상/배치 옵션을 골라 PDF·HTML로 추출하거나, 각자 자기 노션으로 푸시.
+- 법령을 최대 10개까지 선택(편집·검색), 드래그(≡)로 순서변경.
+- 보기 모드: 탭 / 3단(조번호) / 위임 3단(법↔시행령·규칙) / 호 단위 관련조문.
+- 자기법령 인용(📎)·타법 인용(📖) 펼침, 색상·배치 옵션, PDF·HTML 추출, 이용자별 노션 푸시.
 - ⚠️ 이 앱은 AI를 안 씀 → AI 토큰 소모 0. 노션 토큰은 이용자 각자의 것.
 """
 import re
@@ -12,9 +12,13 @@ import streamlit as st
 import law_engine as E
 import notion_sink as N
 import exporters as X
+try:
+    from streamlit_sortables import sort_items
+except Exception:
+    sort_items = None
 
 st.set_page_config(page_title="법령 조합 뷰어", page_icon="⚖️", layout="wide")
-MAX_PICK = 3
+MAX_PICK = 10
 
 # ── 캐시 래퍼 ────────────────────────────────────────────────────────────────
 @st.cache_data(show_spinner=False, ttl=6 * 3600)
@@ -54,42 +58,66 @@ def _html_bytes(names, inc, color, layout):
 
 # ── 세션 상태 ────────────────────────────────────────────────────────────────
 if "picked" not in st.session_state:
-    st.session_state.picked = list(E.CORE_LAWS[:1])
+    st.session_state.picked = list(E.CORE_LAWS)          # 기본: 4개 법률
+if "extra" not in st.session_state:
+    st.session_state.extra = []                          # 검색으로 추가한 법령명
 
-def toggle_pick(nm):
-    p = st.session_state.picked
-    if nm in p: p.remove(nm)
-    elif len(p) < MAX_PICK: p.append(nm)
-    else: st.session_state._warn = True
+def add_law(nm):
+    if nm not in st.session_state.extra and nm not in (E.CORE_LAWS + [g[0] for g in E.GUIDES]):
+        st.session_state.extra.append(nm)
+    if nm not in st.session_state.picked and len(st.session_state.picked) < MAX_PICK:
+        st.session_state.picked.append(nm)
+    st.session_state["ck_" + nm] = True
 
-# ── 사이드바 ─────────────────────────────────────────────────────────────────
+# ── 사이드바: 법령 선택·순서 ─────────────────────────────────────────────────
 st.sidebar.title("⚖️ 법령 조합")
-st.sidebar.caption(f"법제처 OPEN API 실시간 · 최대 {MAX_PICK}개")
-if st.session_state.pop("_warn", False):
-    st.sidebar.warning(f"최대 {MAX_PICK}개까지만 선택할 수 있어요.")
+st.sidebar.caption(f"법제처 실시간 · 최대 {MAX_PICK}개 · 드래그(≡)로 순서변경")
 
-st.sidebar.subheader("기본 법령")
-for nm in E.CORE_LAWS + [g[0] for g in E.GUIDES]:
-    st.sidebar.checkbox(nm, value=(nm in st.session_state.picked),
-                        key="chk_" + nm, on_change=toggle_pick, args=(nm,))
+catalog = list(dict.fromkeys(E.CORE_LAWS + [g[0] for g in E.GUIDES] + st.session_state.extra))
 
-st.sidebar.divider()
-st.sidebar.subheader("🔎 다른 법 검색·추가")
-q = st.sidebar.text_input("법령명 검색", placeholder="예: 건축법")
-if q:
-    try:
-        for r in c_search(q)[:10]:
-            st.sidebar.button(f"➕ {r['name']}", key="add_" + str(r["mst"]),
-                              on_click=toggle_pick, args=(r["name"],))
-    except Exception as e:
-        st.sidebar.error(f"검색 실패: {e}")
+with st.sidebar.expander("✏️ 법령 편집 (선택·검색)", expanded=False):
+    q = st.text_input("법령명 검색 후 추가", placeholder="예: 건축법")
+    if q:
+        try:
+            for r in c_search(q)[:10]:
+                st.button(f"➕ {r['name']}", key="add_" + str(r["mst"]),
+                          on_click=add_law, args=(r["name"],), use_container_width=True)
+        except Exception as e:
+            st.error(f"검색 실패: {e}")
+    st.caption("체크 = 표시 / 해제 = 제외")
+    for nm in catalog:
+        st.session_state.setdefault("ck_" + nm, nm in st.session_state.picked)
+    selected = [nm for nm in catalog if st.checkbox(nm, key="ck_" + nm)]
+
+# 체크 결과로 목록 재구성(기존 순서 유지 + 새로 체크된 것 뒤에 추가), 최대 10
+if len(selected) > MAX_PICK:
+    st.sidebar.warning(f"최대 {MAX_PICK}개까지만 표시합니다.")
+    selected = selected[:MAX_PICK]
+picked = [p for p in st.session_state.picked if p in selected] + \
+         [s for s in selected if s not in st.session_state.picked]
+st.session_state.picked = picked
+
+# 드래그로 순서변경 (같은 구성이면 key 고정 → 정렬 유지 / 구성 바뀌면 remount)
+if picked and sort_items:
+    st.sidebar.caption("↕️ 아래에서 드래그해 순서 바꾸기")
+    with st.sidebar:
+        new_order = sort_items(picked, direction="vertical",
+                               key="sort_" + "|".join(sorted(picked)))
+    if new_order and new_order != picked:
+        st.session_state.picked = picked = new_order
+elif picked and not sort_items:            # 컴포넌트 없을 때 ▲▼ 대체
+    for i, nm in enumerate(picked):
+        c1, c2, c3 = st.sidebar.columns([6, 1, 1])
+        c1.write(f"{i+1}. {nm[:16]}")
+        if c2.button("▲", key=f"up{i}", disabled=(i == 0)):
+            picked[i-1], picked[i] = picked[i], picked[i-1]; st.session_state.picked = picked; st.rerun()
+        if c3.button("▼", key=f"dn{i}", disabled=(i == len(picked)-1)):
+            picked[i+1], picked[i] = picked[i], picked[i+1]; st.session_state.picked = picked; st.rerun()
 
 st.sidebar.divider()
 if st.sidebar.button("🔄 최신으로 새로고침"):
     st.cache_data.clear(); E._IDX.clear(); E._MC = None
     st.rerun()
-
-picked = st.session_state.picked
 
 # ── 보기 방식 / 표시 옵션 ────────────────────────────────────────────────────
 st.sidebar.divider()
@@ -194,21 +222,34 @@ def view_delegation(name):
     with st.spinner(f"{name} 위임관계 분석 중…"):
         d = c_deleg(mother)
     st.subheader(f"{d['law']['name']} — 위임 3단")
-    st.caption("각 법 조문 옆에, 그 조를 '법 제N조…에 따라' 위임받은 시행령·시행규칙을 붙였습니다.")
+    st.caption("법 조문과, 그 조를 위임받은 시행령·시행규칙을 같은 행에 3단으로 나란히. 없으면 빈칸.")
+    h1, h2, h3 = st.columns(3)
+    h1.markdown("**📘 법률**"); h2.markdown("**📗 시행령**"); h3.markdown("**📙 시행규칙**")
+    st.divider()
     for header, lines in E.render_units(d["law"]["units"]):
         if header.startswith("§ "):
             st.markdown(f"### {header[2:]}"); continue
         mm = re.match(r"제(\d+)조(?:의(\d+))?", header)
         key = (int(mm.group(1)), int(mm.group(2) or 0)) if mm else None
-        if kw and kw not in header and not any(kw in x for x in lines):
-            cell0 = d["by_jo"].get(key, {})
-            if not any(kw in h for role in ("영", "규칙") for h, _ in cell0.get(role, [])):
-                continue
-        cL, cR = st.columns([3, 2])
-        with cL:
+        cell = d["by_jo"].get(key, {})
+        if kw and kw not in header and not any(kw in x for x in lines) \
+           and not any(kw in h for role in ("영", "규칙") for h, _ in cell.get(role, [])):
+            continue
+        c1, c2, c3 = st.columns(3)
+        with c1:
             st.markdown(f"**{header}**"); render_lines(lines, mother)
-        with cR:
-            render_related(d["by_jo"].get(key, {}))
+        with c2:
+            if cell.get("영"):
+                for hh, ls in cell["영"]:
+                    st.markdown(f"**{hh}**"); render_lines(ls, mother)
+            else:
+                st.caption("—")
+        with c3:
+            if cell.get("규칙"):
+                for hh, ls in cell["규칙"]:
+                    st.markdown(f"**{hh}**"); render_lines(ls, mother)
+            else:
+                st.caption("—")
         st.divider()
 
 def view_ho(name):
