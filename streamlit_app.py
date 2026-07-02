@@ -160,6 +160,24 @@ def render_lines(lines, mother):
                 except Exception:
                     pass
 
+def law_html(text, level=0):
+    """법 텍스트(내부 \\n 포함)를 들여쓰기 HTML로. level=들여쓰기 깊이.
+    첫 줄은 그 level, 이어지는 줄(세목 1) 2) 등)은 한 단계 더 들여씀."""
+    esc = lambda t: (t or "").replace("<", "&lt;")
+    ind = "&nbsp;" * (2 * level)
+    sub = "&nbsp;" * (2 * level + 3)
+    parts = [p for p in (text or "").split("\n")]
+    if not parts or not parts[0].strip():
+        parts = [p for p in parts if p.strip()]
+    if not parts:
+        return ""
+    html = ind + esc(parts[0].strip())
+    for p in parts[1:]:
+        s = p.strip()
+        if s:
+            html += "<br>" + sub + esc(s)
+    return html
+
 def render_related(cell):
     """위임/호 단위에서 붙는 시행령·규칙 조문을 접이식으로."""
     if not cell:
@@ -254,13 +272,13 @@ def view_delegation(name):
     def emit_ho(jo, gaji, M, ho):
         if not ho.get("K"): return
         Kji = ho.get("Kji", 0)
-        # 호 두문 (목 지정 없는 인용이 붙음)
-        row(f"&nbsp;&nbsp;**{ho['K']}{('의'+str(Kji)) if Kji else ''}.** {esc(ho['text'])}",
+        # 호 두문 (호 본문에 이미 '6의3.' 번호가 있으므로 번호를 덧붙이지 않음)
+        row(law_html(ho["text"], 1),
             [(jo, gaji, M, ho["K"], Kji, None), (jo, gaji, None, ho["K"], Kji, None)])
-        # 각 목 (가·나·다) — 그 목을 콕 집은 인용이 옆에 붙음
+        # 각 목(가·나·다) — 세목 1) 2) 3)은 law_html이 줄바꿈·들여쓰기 처리
         for mok in ho.get("목", []):
             lab = mok.get("label")
-            row(f"&nbsp;&nbsp;&nbsp;&nbsp;{esc(mok['text'])}",
+            row(law_html(mok["text"], 2),
                 [(jo, gaji, M, ho["K"], Kji, lab), (jo, gaji, None, ho["K"], Kji, lab)])
 
     for s in E.law_units_structured(d["law"]["units"]):
@@ -271,11 +289,11 @@ def view_delegation(name):
                   + [m["text"] for ho in s["호"] for m in ho["목"]]
             if kw not in " ".join(hay):
                 continue
-        row(f"**{s['header']}**" + (f"<br>{esc(s['head'])}" if s["head"] else ""),
+        row(f"**{s['header']}**" + (f"<br>{law_html(s['head'], 0)}" if s["head"] else ""),
             [(s["jo"], s["gaji"], None, None, 0, None)])
         for hang in s["항"]:
             if hang["text"]:
-                row(esc(hang["text"]), [(s["jo"], s["gaji"], hang["M"], None, 0, None)])
+                row(law_html(hang["text"], 0), [(s["jo"], s["gaji"], hang["M"], None, 0, None)])
             for ho in hang["호"]:
                 emit_ho(s["jo"], s["gaji"], hang["M"], ho)
         for ho in s["호"]:
@@ -294,21 +312,18 @@ def view_ho(name):
            and not any(kw in ho["text"] for h in s["항"] for ho in h["호"]) \
            and not any(kw in ho["text"] for ho in s["호"]):
             continue
-        esc = lambda t: (t or "").replace("<", "&lt;")
         st.markdown(f"**{s['header']}**")
-        if s["head"]: st.markdown(esc(s["head"]))
+        if s["head"]: st.markdown(law_html(s["head"], 0), unsafe_allow_html=True)
         def show_ho(hang_M, ho):
             if not ho.get("K"): return
-            Kji = ho.get("Kji", 0)
-            lead = f"{ho['K']}{('의'+str(Kji)) if Kji else ''}."
-            st.markdown(f"&nbsp;&nbsp;**{lead}** {esc(ho['text'])}", unsafe_allow_html=True)
+            st.markdown(law_html(ho["text"], 1), unsafe_allow_html=True)
             for mok in ho.get("목", []):
-                st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;{esc(mok['text'])}", unsafe_allow_html=True)
+                st.markdown(law_html(mok["text"], 2), unsafe_allow_html=True)
             cell = d["by_ho"].get((s["jo"], s["gaji"], hang_M, ho["K"])) \
                 or d["by_ho"].get((s["jo"], s["gaji"], None, ho["K"]))
             if cell: render_related(cell)
         for hang in s["항"]:
-            if hang["text"]: st.markdown(esc(hang["text"]))
+            if hang["text"]: st.markdown(law_html(hang["text"], 0), unsafe_allow_html=True)
             for ho in hang["호"]: show_ho(hang["M"], ho)
         for ho in s["호"]:
             show_ho(None, ho)
