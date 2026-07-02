@@ -435,7 +435,7 @@ def build_delegation(mother):
     law   = fetch_law_units(mother)
     yeong = fetch_law_units(mother + " 시행령")
     rule  = fetch_law_units(mother + " 시행규칙")
-    by_jo, by_ho, yeong_to_law = {}, {}, {}
+    by_jo, by_ho, by_ref, yeong_to_law = {}, {}, {}, {}
     def add(d, key, role, r):
         if not r: return
         d.setdefault(key, {"영": [], "규칙": []})
@@ -447,7 +447,8 @@ def build_delegation(mother):
         yjkey = (jono, _honum(u.get("조문가지번호")) or 0)
         for (jo, gaji, hang, ho) in _refs(_unit_text(u), "법"):
             yeong_to_law[yjkey] = (jo, gaji)
-            add(by_jo, (jo, gaji), "영", r)
+            add(by_jo, (jo, gaji), "영", r)                 # 조 단위 집계(구버전 호환)
+            add(by_ref, (jo, gaji, hang, ho), "영", r)      # 인용한 정확한 조·항·호
             if ho: add(by_ho, (jo, gaji, hang, ho), "영", r)
     for u in (as_list(rule["units"]) if rule else []):
         jono = _honum(u.get("조문번호"))
@@ -455,12 +456,15 @@ def build_delegation(mother):
         r = _unit_render(u); txt = _unit_text(u); placed = set()
         for (jo, gaji, hang, ho) in _refs(txt, "법"):
             add(by_jo, (jo, gaji), "규칙", r); placed.add((jo, gaji))
+            add(by_ref, (jo, gaji, hang, ho), "규칙", r)
             if ho: add(by_ho, (jo, gaji, hang, ho), "규칙", r)
-        for (yjo, ygaji, _, _) in _refs(txt, "영"):
+        for (yjo, ygaji, _, _) in _refs(txt, "영"):          # 규칙→영→법(2-hop): 조 단위로만
             lk = yeong_to_law.get((yjo, ygaji))
             if lk and lk not in placed:
-                add(by_jo, lk, "규칙", r); placed.add(lk)
-    return {"law": law, "by_jo": by_jo, "by_ho": by_ho}
+                add(by_jo, lk, "규칙", r)
+                add(by_ref, (lk[0], lk[1], None, None), "규칙", r)
+                placed.add(lk)
+    return {"law": law, "by_jo": by_jo, "by_ho": by_ho, "by_ref": by_ref}
 
 def law_units_structured(units):
     """법 units → [{jo,gaji,header, head(조문두문), 항:[{M,text, 호:[{K,text}]}], 호:[{K,text}]}].

@@ -221,35 +221,56 @@ def view_delegation(name):
     mother, _ = mother_of(name)
     with st.spinner(f"{name} 위임관계 분석 중…"):
         d = c_deleg(mother)
+    ref = d.get("by_ref", {})
     st.subheader(f"{d['law']['name']} — 위임 3단")
-    st.caption("법 조문과, 그 조를 위임받은 시행령·시행규칙을 같은 행에 3단으로 나란히. 없으면 빈칸.")
-    h1, h2, h3 = st.columns(3)
+    st.caption("법을 조·항·호로 나눠, 그 **정확한 단위**(예: 제2조제20호)를 위임받은 시행령·시행규칙을 같은 행에. 없으면 빈칸.")
+    h1, h2, h3 = st.columns([4, 4, 3])
     h1.markdown("**📘 법률**"); h2.markdown("**📗 시행령**"); h3.markdown("**📙 시행규칙**")
     st.divider()
-    for header, lines in E.render_units(d["law"]["units"]):
-        if header.startswith("§ "):
-            st.markdown(f"### {header[2:]}"); continue
-        mm = re.match(r"제(\d+)조(?:의(\d+))?", header)
-        key = (int(mm.group(1)), int(mm.group(2) or 0)) if mm else None
-        cell = d["by_jo"].get(key, {})
-        if kw and kw not in header and not any(kw in x for x in lines) \
-           and not any(kw in h for role in ("영", "규칙") for h, _ in cell.get(role, [])):
-            continue
-        c1, c2, c3 = st.columns(3)
+    esc = lambda t: (t or "").replace("<", "&lt;")
+
+    def gather(keys):
+        out = {"영": [], "규칙": []}
+        for k in keys:
+            c = ref.get(k)
+            if not c: continue
+            for role in ("영", "규칙"):
+                for it in c[role]:
+                    if it not in out[role]: out[role].append(it)
+        return out
+
+    def row(law_md, keys):
+        cell = gather(keys)
+        c1, c2, c3 = st.columns([4, 4, 3])
         with c1:
-            st.markdown(f"**{header}**"); render_lines(lines, mother)
+            st.markdown(law_md, unsafe_allow_html=True)
         with c2:
-            if cell.get("영"):
-                for hh, ls in cell["영"]:
-                    st.markdown(f"**{hh}**"); render_lines(ls, mother)
-            else:
-                st.caption("—")
+            for hh, ls in cell["영"]:
+                st.markdown(f"**{hh}**"); render_lines(ls, mother)
         with c3:
-            if cell.get("규칙"):
-                for hh, ls in cell["규칙"]:
-                    st.markdown(f"**{hh}**"); render_lines(ls, mother)
-            else:
-                st.caption("—")
+            for hh, ls in cell["규칙"]:
+                st.markdown(f"**{hh}**"); render_lines(ls, mother)
+
+    for s in E.law_units_structured(d["law"]["units"]):
+        # kw 필터: 이 조의 법 텍스트/붙는 조문 헤더에 없으면 통째로 스킵
+        if kw:
+            hay = [s["header"], s["head"]] + [ho["text"] for h in s["항"] for ho in h["호"]] \
+                  + [ho["text"] for ho in s["호"]] + [hh["text"] for hh in s["항"]]
+            if kw not in " ".join(hay):
+                continue
+        row(f"**{s['header']}**" + (f"<br>{esc(s['head'])}" if s["head"] else ""),
+            [(s["jo"], s["gaji"], None, None)])
+        for hang in s["항"]:
+            if hang["text"]:
+                row(esc(hang["text"]), [(s["jo"], s["gaji"], hang["M"], None)])
+            for ho in hang["호"]:
+                if not ho.get("K"): continue
+                row(f"&nbsp;&nbsp;**{ho['K']}.** {esc(ho['text'])}",
+                    [(s["jo"], s["gaji"], hang["M"], ho["K"]), (s["jo"], s["gaji"], None, ho["K"])])
+        for ho in s["호"]:
+            if not ho.get("K"): continue
+            row(f"&nbsp;&nbsp;**{ho['K']}.** {esc(ho['text'])}",
+                [(s["jo"], s["gaji"], None, ho["K"])])
         st.divider()
 
 def view_ho(name):
