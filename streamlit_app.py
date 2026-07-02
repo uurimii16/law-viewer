@@ -251,26 +251,35 @@ def view_delegation(name):
             for hh, ls in cell["규칙"]:
                 st.markdown(f"**{hh}**"); render_lines(ls, mother)
 
+    def emit_ho(jo, gaji, M, ho):
+        if not ho.get("K"): return
+        Kji = ho.get("Kji", 0)
+        # 호 두문 (목 지정 없는 인용이 붙음)
+        row(f"&nbsp;&nbsp;**{ho['K']}{('의'+str(Kji)) if Kji else ''}.** {esc(ho['text'])}",
+            [(jo, gaji, M, ho["K"], Kji, None), (jo, gaji, None, ho["K"], Kji, None)])
+        # 각 목 (가·나·다) — 그 목을 콕 집은 인용이 옆에 붙음
+        for mok in ho.get("목", []):
+            lab = mok.get("label")
+            row(f"&nbsp;&nbsp;&nbsp;&nbsp;{esc(mok['text'])}",
+                [(jo, gaji, M, ho["K"], Kji, lab), (jo, gaji, None, ho["K"], Kji, lab)])
+
     for s in E.law_units_structured(d["law"]["units"]):
-        # kw 필터: 이 조의 법 텍스트/붙는 조문 헤더에 없으면 통째로 스킵
         if kw:
-            hay = [s["header"], s["head"]] + [ho["text"] for h in s["항"] for ho in h["호"]] \
-                  + [ho["text"] for ho in s["호"]] + [hh["text"] for hh in s["항"]]
+            hay = [s["header"], s["head"]] + [hh["text"] for hh in s["항"]] \
+                  + [ho["text"] for h in s["항"] for ho in h["호"]] + [ho["text"] for ho in s["호"]] \
+                  + [m["text"] for h in s["항"] for ho in h["호"] for m in ho["목"]] \
+                  + [m["text"] for ho in s["호"] for m in ho["목"]]
             if kw not in " ".join(hay):
                 continue
         row(f"**{s['header']}**" + (f"<br>{esc(s['head'])}" if s["head"] else ""),
-            [(s["jo"], s["gaji"], None, None)])
+            [(s["jo"], s["gaji"], None, None, 0, None)])
         for hang in s["항"]:
             if hang["text"]:
-                row(esc(hang["text"]), [(s["jo"], s["gaji"], hang["M"], None)])
+                row(esc(hang["text"]), [(s["jo"], s["gaji"], hang["M"], None, 0, None)])
             for ho in hang["호"]:
-                if not ho.get("K"): continue
-                row(f"&nbsp;&nbsp;**{ho['K']}.** {esc(ho['text'])}",
-                    [(s["jo"], s["gaji"], hang["M"], ho["K"]), (s["jo"], s["gaji"], None, ho["K"])])
+                emit_ho(s["jo"], s["gaji"], hang["M"], ho)
         for ho in s["호"]:
-            if not ho.get("K"): continue
-            row(f"&nbsp;&nbsp;**{ho['K']}.** {esc(ho['text'])}",
-                [(s["jo"], s["gaji"], None, ho["K"])])
+            emit_ho(s["jo"], s["gaji"], None, ho)
         st.divider()
 
 def view_ho(name):
@@ -290,7 +299,11 @@ def view_ho(name):
         if s["head"]: st.markdown(esc(s["head"]))
         def show_ho(hang_M, ho):
             if not ho.get("K"): return
-            st.markdown(f"&nbsp;&nbsp;**{ho['K']}.** {esc(ho['text'])}", unsafe_allow_html=True)
+            Kji = ho.get("Kji", 0)
+            lead = f"{ho['K']}{('의'+str(Kji)) if Kji else ''}."
+            st.markdown(f"&nbsp;&nbsp;**{lead}** {esc(ho['text'])}", unsafe_allow_html=True)
+            for mok in ho.get("목", []):
+                st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;{esc(mok['text'])}", unsafe_allow_html=True)
             cell = d["by_ho"].get((s["jo"], s["gaji"], hang_M, ho["K"])) \
                 or d["by_ho"].get((s["jo"], s["gaji"], None, ho["K"]))
             if cell: render_related(cell)

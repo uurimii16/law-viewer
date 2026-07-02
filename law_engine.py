@@ -406,20 +406,29 @@ def three_column(name):
 
 # ── 위임 관계(법↔시행령·규칙) 인덱스 ─────────────────────────────────────────
 _HANG_RE = re.compile(r'제\s*(\d+)\s*항')
-_HO_RE   = re.compile(r'제\s*(\d+)\s*호')
-def _tail_hangho(tail):
-    h = _HANG_RE.search(tail or ""); k = _HO_RE.search(tail or "")
-    return (int(h.group(1)) if h else None, int(k.group(1)) if k else None)
+_HO_RE2  = re.compile(r'제\s*(\d+)\s*호(?:\s*의\s*(\d+))?')          # 제6호, 제6호의3
+_MOK_RE  = re.compile(r'호(?:\s*의\s*\d+)?\s*([가-힣])\s*목')        # …제6호의3가목
+def _tail_parse(tail):
+    """인용 꼬리(제M항제K호의J가목) → (항, 호, 호가지, 목). 없으면 None/0."""
+    tail = tail or ""
+    h = _HANG_RE.search(tail)
+    k = _HO_RE2.search(tail)
+    mk = _MOK_RE.search(tail)
+    return (int(h.group(1)) if h else None,
+            int(k.group(1)) if k else None,
+            int(k.group(2)) if (k and k.group(2)) else 0,
+            mk.group(1) if mk else None)
 
 def _refs(text, who):
-    """text 안의 '<who> 제N조[제M항][제K호]' 인용 → [(조,가지,항,호)]. who='법' 또는 '영'.
-    '건축법·기본법' 등 꼬리 오탐은 (?<![가-힣]) 가드로 막음."""
+    """text 안의 '<who> 제N조[제M항][제K호[의J][가목]]' 인용 → [(조,가지,항,호,호가지,목)].
+    who='법' 또는 '영'. '건축법·기본법' 등 꼬리 오탐은 (?<![가-힣]) 가드로 막음."""
     rx = re.compile(r'(?<![가-힣])' + who +
-                    r'\s*제\s*(\d+)\s*조(?:\s*의\s*(\d+))?((?:\s*제\s*\d+\s*항|\s*제\s*\d+\s*호)*)')
+                    r'\s*제\s*(\d+)\s*조(?:\s*의\s*(\d+))?'
+                    r'((?:\s*제\s*\d+\s*항|\s*제\s*\d+\s*호(?:\s*의\s*\d+)?(?:\s*[가-힣]\s*목)?)*)')
     out = []
     for m in rx.finditer(text or ""):
-        hang, ho = _tail_hangho(m.group(3))
-        out.append((int(m.group(1)), int(m.group(2) or 0), hang, ho))
+        hang, ho, hoji, mok = _tail_parse(m.group(3))
+        out.append((int(m.group(1)), int(m.group(2) or 0), hang, ho, hoji, mok))
     return out
 
 def _unit_text(u):
@@ -445,30 +454,44 @@ def build_delegation(mother):
         if not jono: continue
         r = _unit_render(u)
         yjkey = (jono, _honum(u.get("조문가지번호")) or 0)
-        for (jo, gaji, hang, ho) in _refs(_unit_text(u), "법"):
+        for (jo, gaji, hang, ho, hoji, mok) in _refs(_unit_text(u), "법"):
             yeong_to_law[yjkey] = (jo, gaji)
-            add(by_jo, (jo, gaji), "영", r)                 # 조 단위 집계(구버전 호환)
-            add(by_ref, (jo, gaji, hang, ho), "영", r)      # 인용한 정확한 조·항·호
+            add(by_jo, (jo, gaji), "영", r)                         # 조 단위 집계(구버전 호환)
+            add(by_ref, (jo, gaji, hang, ho, hoji, mok), "영", r)   # 인용한 정확한 조·항·호·호가지·목
             if ho: add(by_ho, (jo, gaji, hang, ho), "영", r)
     for u in (as_list(rule["units"]) if rule else []):
         jono = _honum(u.get("조문번호"))
         if not jono: continue
         r = _unit_render(u); txt = _unit_text(u); placed = set()
-        for (jo, gaji, hang, ho) in _refs(txt, "법"):
+        for (jo, gaji, hang, ho, hoji, mok) in _refs(txt, "법"):
             add(by_jo, (jo, gaji), "규칙", r); placed.add((jo, gaji))
-            add(by_ref, (jo, gaji, hang, ho), "규칙", r)
+            add(by_ref, (jo, gaji, hang, ho, hoji, mok), "규칙", r)
             if ho: add(by_ho, (jo, gaji, hang, ho), "규칙", r)
-        for (yjo, ygaji, _, _) in _refs(txt, "영"):          # 규칙→영→법(2-hop): 조 단위로만
+        for (yjo, ygaji, *_r) in _refs(txt, "영"):          # 규칙→영→법(2-hop): 조 단위로만
             lk = yeong_to_law.get((yjo, ygaji))
             if lk and lk not in placed:
                 add(by_jo, lk, "규칙", r)
-                add(by_ref, (lk[0], lk[1], None, None), "규칙", r)
+                add(by_ref, (lk[0], lk[1], None, None, 0, None), "규칙", r)
                 placed.add(lk)
     return {"law": law, "by_jo": by_jo, "by_ho": by_ho, "by_ref": by_ref}
 
+def _ho_struct(ho):
+    """호 dict → {K, Kji, text, 목:[{label,text}]}. 호번호 필드는 6/6의2/6의3을 못 구분하므로
+    호내용 앞 토큰('6의3.')에서 호·호가지를 파싱한다."""
+    txt = _s(ho.get("호내용")).strip()
+    mm = re.match(r"\s*(\d+)(?:의(\d+))?\.", txt)
+    K   = int(mm.group(1)) if mm else _honum(ho.get("호번호"))
+    Kji = int(mm.group(2)) if (mm and mm.group(2)) else 0
+    moks = []
+    for mok in as_list(ho.get("목")):
+        mt = _s(mok.get("목내용")).strip()
+        lm = re.match(r"\s*([가-힣])\.", mt)
+        moks.append({"label": lm.group(1) if lm else None, "text": mt})
+    return {"K": K, "Kji": Kji, "text": txt, "목": moks}
+
 def law_units_structured(units):
-    """법 units → [{jo,gaji,header, head(조문두문), 항:[{M,text, 호:[{K,text}]}], 호:[{K,text}]}].
-    호 단위 관련조문 표시를 위해 항/호 번호를 유지한다."""
+    """법 units → [{jo,gaji,header, head, 항:[{M,text, 호:[{K,Kji,text,목[]}]}], 호:[...]}].
+    호가지(6의3)와 목(가·나)까지 유지 → 위임/호 단위 정밀 정렬·표시."""
     out = []
     for u in as_list(units):
         jo = _honum(u.get("조문번호"))
@@ -480,11 +503,9 @@ def law_units_structured(units):
         hangs = []
         for h in as_list(u.get("항")):
             M = _circ(h.get("항번호"))   # 항번호 없으면 None(암묵 항) → 그 호는 조 직속 취급
-            hos = [{"K": _honum(ho.get("호번호")), "text": _s(ho.get("호내용")).strip()}
-                   for ho in as_list(h.get("호"))]
+            hos = [_ho_struct(ho) for ho in as_list(h.get("호"))]
             hangs.append({"M": M, "text": _s(h.get("항내용")).strip(), "호": hos})
-        direct = [{"K": _honum(ho.get("호번호")), "text": _s(ho.get("호내용")).strip()}
-                  for ho in as_list(u.get("호"))]
+        direct = [_ho_struct(ho) for ho in as_list(u.get("호"))]
         out.append({"jo": jo, "gaji": gaji, "header": header, "head": head,
                     "항": hangs, "호": direct})
     return out
