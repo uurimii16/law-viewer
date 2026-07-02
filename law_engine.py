@@ -84,31 +84,45 @@ def search_admrul(query, display=20):
              "date": str(it.get("시행일자", ""))}
             for it in as_list(d.get("AdmRulSearch", {}).get("admrul"))]
 
+# 세션(프로세스) 내 법제처 응답 캐시 — 같은 법령을 여러 경로(build_delegation·get_index·
+# three_column·tab)에서 중복 fetch하지 않도록. 새로고침 시 clear_fetch_cache()로 비움.
+_FETCH = {}
+def clear_fetch_cache():
+    _FETCH.clear()
+
 def fetch_admrul(name):
+    key = ("admrul", name)
+    if key in _FETCH: return _FETCH[key]
     d = drf("lawSearch.do", target="admrul", query=name, display="10")
     items = as_list(d.get("AdmRulSearch", {}).get("admrul"))
     hit = next((it for it in items if norm(it.get("행정규칙명")) == norm(name)), None) or (items[0] if items else None)
-    if not hit: return None
+    if not hit:
+        _FETCH[key] = None; return None
     root = drf("lawService.do", target="admrul", ID=hit["행정규칙일련번호"]).get("AdmRulService", {})
     info = root.get("행정규칙기본정보", {})
     body = _s(root.get("조문내용", "")) or ""
-    return {"name": info.get("행정규칙명", name), "date": _s(info.get("시행일자", "")),
-            "kind": info.get("행정규칙종류", "행정규칙"), "body": body}
+    out = {"name": info.get("행정규칙명", name), "date": _s(info.get("시행일자", "")),
+           "kind": info.get("행정규칙종류", "행정규칙"), "body": body}
+    _FETCH[key] = out; return out
 
 def fetch_law_units(name):
-    """법령명(법률/시행령/시행규칙/규칙) → {name, date, kind, units[]}."""
+    """법령명(법률/시행령/시행규칙/규칙) → {name, date, kind, units[]}. 프로세스 내 캐시."""
+    key = ("law", name)
+    if key in _FETCH: return _FETCH[key]
     d = drf("lawSearch.do", target="law", query=name, display="20")
     items = as_list(d.get("LawSearch", {}).get("law"))
     hit = next((it for it in items if norm(it.get("법령명한글")) == norm(name)),
                items[0] if items else None)
-    if not hit: return None
+    if not hit:
+        _FETCH[key] = None; return None
     root = drf("lawService.do", target="law", MST=hit["법령일련번호"]).get("법령", {})
     basic = root.get("기본정보", {})
     kind = basic.get("법종구분")
     kind = kind.get("content", "") if isinstance(kind, dict) else _s(kind)
     units = as_list(root.get("조문", {}).get("조문단위"))
-    return {"name": basic.get("법령명_한글") or hit.get("법령명한글", name),
-            "date": _s(basic.get("시행일자", "")), "kind": kind or "법령", "units": units}
+    out = {"name": basic.get("법령명_한글") or hit.get("법령명한글", name),
+           "date": _s(basic.get("시행일자", "")), "kind": kind or "법령", "units": units}
+    _FETCH[key] = out; return out
 
 # 검색결과 로딩용: 모법 인덱스 빌드에도 재사용
 def fetch_units(law_name):
@@ -150,18 +164,8 @@ def _build_role_index(units):
 
 _MC = None
 def _units_cached(law_name, role, mother):
-    global _MC
-    if _MC is None:
-        try:    _MC = json.load(open(MCACHE, encoding="utf-8"))
-        except Exception: _MC = {}
-    key = f"{mother}|{role}"
-    if key not in _MC:
-        _MC[key] = fetch_units(law_name)
-        try:
-            os.makedirs(os.path.dirname(MCACHE), exist_ok=True)
-            json.dump(_MC, open(MCACHE, "w", encoding="utf-8"), ensure_ascii=False)
-        except Exception: pass
-    return _MC[key]
+    # fetch_units → fetch_law_units는 이미 _FETCH(프로세스 캐시)를 타므로 별도 디스크 캐시 불필요.
+    return fetch_units(law_name)
 
 _IDX = {}
 def get_index(mother):

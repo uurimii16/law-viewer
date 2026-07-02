@@ -117,6 +117,7 @@ elif picked and not sort_items:            # 컴포넌트 없을 때 ▲▼ 대�
 st.sidebar.divider()
 if st.sidebar.button("🔄 최신으로 새로고침"):
     st.cache_data.clear(); E._IDX.clear(); E._MC = None
+    E.clear_fetch_cache(); E._EXT_IDX.clear()
     st.rerun()
 
 # ── 보기 방식 / 표시 옵션 ────────────────────────────────────────────────────
@@ -159,6 +160,18 @@ def render_lines(lines, mother):
                             for x in blines: st.write(x)
                 except Exception:
                     pass
+
+def paginate(seq, key, per=12, unit="조"):
+    """긴 목록을 페이지 단위로 잘라 렌더 부담을 줄인다.
+    키워드 검색 중이면 전체(필터가 알아서 줄임)를 반환."""
+    n = len(seq)
+    if kw or n <= per:
+        return seq
+    pages = (n + per - 1) // per
+    c1, c2 = st.columns([4, 1])
+    pg = c1.slider(f"페이지 ({unit} {per}개씩 · 총 {n}{unit})", 1, pages, 1, key=key)
+    c2.caption(f"{pg} / {pages} 쪽")
+    return seq[(pg - 1) * per: pg * per]
 
 def law_html(text, level=0):
     """법 텍스트(내부 \\n 포함)를 들여쓰기 HTML로. level=들여쓰기 깊이.
@@ -206,13 +219,15 @@ def view_tabs():
             st.caption(f"시행 {E.fmt_date(doc.get('date',''))} · {doc.get('kind','')}"
                        + (f" · 인용 모법: {mother}" if mother != name else ""))
             if "units" in doc:
-                for header, lines in E.render_units(doc["units"]):
+                arts = paginate(E.render_units(doc["units"]), key="pg_tab_" + name, per=15)
+                for header, lines in arts:
                     if header.startswith("§ "):
                         st.markdown(f"### {header[2:]}"); continue
                     st.markdown(f"**{header}**")
                     render_lines(lines, mother)
             else:
-                render_lines(E.split_guide(doc["body"]), mother)
+                render_lines(paginate(E.split_guide(doc["body"]), key="pg_tabg_" + name, per=200, unit="줄"),
+                             mother)
 
 def view_3dan_jono(name):
     mother, _ = mother_of(name)
@@ -222,7 +237,7 @@ def view_3dan_jono(name):
     st.caption("법·시행령·시행규칙을 조번호로 나란히(대응은 참고용). 없는 단은 '—'.")
     c1, c2, c3 = st.columns(3)
     for c, m in ((c1, "**📘 법률**"), (c2, "**📗 시행령**"), (c3, "**📙 시행규칙**")): c.markdown(m)
-    for row in t["rows"]:
+    for row in paginate(t["rows"], key="pg_3dan", per=15):
         if kw and not any(kw in (E._s(c[1]) if (c := row[r]) else "") for r in ("법", "영", "규칙")):
             continue
         cols = st.columns(3)
@@ -281,7 +296,7 @@ def view_delegation(name):
             row(law_html(mok["text"], 2),
                 [(jo, gaji, M, ho["K"], Kji, lab), (jo, gaji, None, ho["K"], Kji, lab)])
 
-    for s in E.law_units_structured(d["law"]["units"]):
+    for s in paginate(E.law_units_structured(d["law"]["units"]), key="pg_deleg", per=10):
         if kw:
             hay = [s["header"], s["head"]] + [hh["text"] for hh in s["항"]] \
                   + [ho["text"] for h in s["항"] for ho in h["호"]] + [ho["text"] for ho in s["호"]] \
@@ -306,7 +321,7 @@ def view_ho(name):
         d = c_deleg(mother)
     st.subheader(f"{d['law']['name']} — 호 단위 관련조문")
     st.caption("각 호(예: 13. 공공시설) 아래에 그 호를 구체화한 시행령·규칙을 붙였습니다.")
-    struct = E.law_units_structured(d["law"]["units"])
+    struct = paginate(E.law_units_structured(d["law"]["units"]), key="pg_ho", per=10)
     for s in struct:
         if kw and kw not in s["header"] and kw not in s["head"] \
            and not any(kw in ho["text"] for h in s["항"] for ho in h["호"]) \
