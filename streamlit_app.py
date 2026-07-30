@@ -137,6 +137,16 @@ COLORS = {"파랑": "#2E5AAC", "먹색": "#222222", "진회색": "#444B54", "고
 color = COLORS[st.sidebar.selectbox("제목 색상", list(COLORS), index=0)]
 layout = st.sidebar.radio("배치", ["기본", "조밀"], horizontal=True)
 
+# 쪽당 표시량: 0 = 페이지 나누지 않고 전체.
+# 기준값 PAGE_BASE일 때 각 모드가 원래 쓰던 per를 그대로 쓰고, 그 비율로 스케일한다.
+PAGE_BASE = 15
+PAGE_CHOICES = {"10개씩": 10, "15개씩(기본)": 15, "30개씩": 30, "60개씩": 60, "전체(느림)": 0}
+PAGE_SIZE = PAGE_CHOICES[st.sidebar.selectbox(
+    "쪽당 조문 수", list(PAGE_CHOICES), index=1,
+    help="한 쪽에 보여줄 조문 수(지침은 줄 수). '전체'는 페이지 나누기 없이 다 보여줍니다 — "
+         "조문이 많은 법(예: 국계법 위임 3단 1200행 이상)은 느려질 수 있습니다. "
+         "위임 3단·호 단위는 렌더가 무거워 이 값의 2/3만 씁니다.")]
+
 kw = st.text_input("본문 검색(키워드)", placeholder="조문 안 단어로 필터 · 비우면 전체")
 options = {"include_cites": show_cites, "color": color, "layout": layout}
 
@@ -163,13 +173,22 @@ def render_lines(lines, mother):
 
 def paginate(seq, key, per=12, unit="조"):
     """긴 목록을 페이지 단위로 잘라 렌더 부담을 줄인다.
-    키워드 검색 중이면 전체(필터가 알아서 줄임)를 반환."""
+    사이드바 '쪽당 조문 수'(PAGE_SIZE)에 맞춰 per를 비례 조정하고,
+    '전체' 선택이거나 키워드 검색 중이면 전체(필터가 알아서 줄임)를 반환."""
     n = len(seq)
+    if not PAGE_SIZE:                                  # 전체 보기
+        return seq
+    per = max(1, round(per * PAGE_SIZE / PAGE_BASE))
     if kw or n <= per:
         return seq
     pages = (n + per - 1) // per
+    # 쪽당 개수를 줄였다 늘리면 저장된 쪽 번호가 범위를 벗어날 수 있어 정리한다.
+    if key in st.session_state and not (1 <= int(st.session_state[key]) <= pages):
+        del st.session_state[key]
+    st.caption(f"📄 총 {n}{unit} · {pages}쪽 — 아래 슬라이더로 쪽을 넘기세요 "
+               f"(한 번에 다 보려면 사이드바 ‘쪽당 조문 수’를 ‘전체’로)")
     c1, c2 = st.columns([4, 1])
-    pg = c1.slider(f"페이지 ({unit} {per}개씩 · 총 {n}{unit})", 1, pages, 1, key=key)
+    pg = c1.slider(f"페이지 ({unit} {per}개씩)", 1, pages, 1, key=key)
     c2.caption(f"{pg} / {pages} 쪽")
     return seq[(pg - 1) * per: pg * per]
 
